@@ -8,16 +8,30 @@ struct Node {
     int sz;
 };
 
-static vector<Node*> g_pool;
+// Arena allocator to reduce per-node overhead.
+static vector<char*> g_blocks;
+static char* g_cur = nullptr;
+static size_t g_left = 0;
+static const size_t BLOCK_BYTES = 1u<<22; // 4 MiB per block
+
+static inline void ensure_block(){
+    if(g_left < sizeof(Node)){
+        char* buf = new char[BLOCK_BYTES];
+        g_blocks.push_back(buf);
+        g_cur = buf;
+        g_left = BLOCK_BYTES;
+    }
+}
 
 static inline int getsz(Node* t){ return t? t->sz : 0; }
 static inline Node* make_node(long long k, uint32_t p, Node* l=nullptr, Node* r=nullptr){
-    Node* n = new Node{ k, p, l, r, 1 };
-    n->sz = 1 + getsz(l) + getsz(r);
-    g_pool.push_back(n);
+    ensure_block();
+    Node* n = reinterpret_cast<Node*>(g_cur);
+    g_cur += sizeof(Node); g_left -= sizeof(Node);
+    n->key = k; n->prior = p; n->l = l; n->r = r; n->sz = 1 + getsz(l) + getsz(r);
     return n;
 }
-static inline Node* clone(Node* t){ if(!t) return nullptr; Node* n = new Node{ t->key, t->prior, t->l, t->r, t->sz }; g_pool.push_back(n); return n; }
+static inline Node* clone(Node* t){ if(!t) return nullptr; ensure_block(); Node* n = reinterpret_cast<Node*>(g_cur); g_cur += sizeof(Node); g_left -= sizeof(Node); *n = *t; return n; }
 static inline void pull(Node* t){ if(t) t->sz = 1 + getsz(t->l) + getsz(t->r); }
 
 // xorshift RNG
@@ -152,7 +166,7 @@ int main(){
             default: break;
         }
     }
-    // Free all allocated nodes (persistent nodes referenced by multiple versions are in pool once)
-    for(Node* p : g_pool) delete p;
+    // Free all arena blocks
+    for(char* b : g_blocks) delete [] b;
     return 0;
 }
