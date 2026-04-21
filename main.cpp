@@ -50,11 +50,13 @@ static bool find_t(const shared_ptr<Node>& t, long long key){
     return false;
 }
 
-static int count_range(const shared_ptr<Node>& t, long long L, long long R){
-    if(!t) return 0;
-    if(t->key < L) return count_range(t->r, L, R);
-    if(t->key > R) return count_range(t->l, L, R);
-    return 1 + count_range(t->l, L, R) + count_range(t->r, L, R);
+static int count_leq(const shared_ptr<Node>& t, long long x){
+    int cnt=0; auto cur=t;
+    while(cur){
+        if(cur->key <= x){ cnt += 1 + getsz(cur->l); cur = cur->r; }
+        else cur = cur->l;
+    }
+    return cnt;
 }
 
 static bool predecessor(const shared_ptr<Node>& t, long long key, long long &ans){
@@ -73,7 +75,7 @@ int main(){
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    vector< shared_ptr<Node> > sets(1000005); // up to ~1e6 nodes in worst doc; index up to ~24 in sample
+    unordered_map<int, shared_ptr<Node>> sets; sets.reserve(64);
     // Iterator validity emulation: speedtest maintains a current iterator when last find/emplace success.
     bool valid=false; int it_a=-1; long long it_key=0;
     int op; int lst=0; int cnt=1;
@@ -116,7 +118,7 @@ int main(){
             case 4: { // range a b c
                 cin>>a>>b>>c;
                 int res = 0;
-                if(b<=c) res = count_range(sets[a], b, c);
+                if(b<=c) res = count_leq(sets[a], c) - count_leq(sets[a], b-1);
                 cout<<res<<"\n";
                 cnt++;
                 break;
@@ -151,4 +153,3 @@ int main(){
     }
     return 0;
 }
-
