@@ -1,152 +1,150 @@
 #include <bits/stdc++.h>
 using namespace std;
-
-// Persistent Treap-based ordered set supporting copy-on-write semantics via shared_ptr.
-// Operations: insert (emplace), erase, find, range count, predecessor (--it), successor (++it).
-
+// Faster persistent treap with raw pointers and split/merge. Minimizes overhead vs shared_ptr.
 struct Node {
     long long key;
     uint32_t prior;
-    shared_ptr<Node> l, r;
+    Node *l, *r;
     int sz;
-    Node(long long k, uint32_t p, shared_ptr<Node> l=nullptr, shared_ptr<Node> r=nullptr)
-        : key(k), prior(p), l(l), r(r), sz(1) {}
 };
 
-static inline int getsz(const shared_ptr<Node>& t){ return t? t->sz : 0; }
-static inline shared_ptr<Node> upd(const shared_ptr<Node>& t){ if(!t) return t; auto n = make_shared<Node>(*t); n->sz = 1 + getsz(n->l) + getsz(n->r); return n; }
+static inline int getsz(Node* t){ return t? t->sz : 0; }
+static inline Node* make_node(long long k, uint32_t p, Node* l=nullptr, Node* r=nullptr){
+    Node* n = new Node{ k, p, l, r, 1 };
+    n->sz = 1 + getsz(l) + getsz(r);
+    return n;
+}
+static inline Node* clone(Node* t){ if(!t) return nullptr; return new Node{ t->key, t->prior, t->l, t->r, t->sz }; }
+static inline void pull(Node* t){ if(t) t->sz = 1 + getsz(t->l) + getsz(t->r); }
 
-static shared_ptr<Node> rotate_right(const shared_ptr<Node>& t){ auto n = upd(t); auto L = upd(n->l); n->l = L? L->r : nullptr; if(n) n->sz = 1 + getsz(n->l) + getsz(n->r); if(L){ L->r = n; L->sz = 1 + getsz(L->l) + getsz(L->r); } return L? L : n; }
-static shared_ptr<Node> rotate_left(const shared_ptr<Node>& t){ auto n = upd(t); auto R = upd(n->r); n->r = R? R->l : nullptr; if(n) n->sz = 1 + getsz(n->l) + getsz(n->r); if(R){ R->l = n; R->sz = 1 + getsz(R->l) + getsz(R->r); } return R? R : n; }
-
-static shared_ptr<Node> insert_t(shared_ptr<Node> t, long long key, uint32_t pr){
-    if(!t) return make_shared<Node>(key, pr);
-    t = upd(t);
-    if(key == t->key){ return t; }
-    if(key < t->key){ t->l = insert_t(t->l, key, pr); if(t->l->prior > t->prior) t = rotate_right(t); }
-    else{ t->r = insert_t(t->r, key, pr); if(t->r->prior > t->prior) t = rotate_left(t); }
-    t->sz = 1 + getsz(t->l) + getsz(t->r);
-    return t;
+// xorshift RNG
+static inline uint32_t rng(){
+    static uint64_t s = 0x9E3779B97F4A7C15ULL;
+    s ^= s << 7; s ^= s >> 9; s ^= s << 8;
+    return (uint32_t)(s + (s>>32));
 }
 
-static shared_ptr<Node> erase_t(shared_ptr<Node> t, long long key){
-    if(!t) return t;
-    t = upd(t);
-    if(key < t->key){ t->l = erase_t(t->l, key); }
-    else if(key > t->key){ t->r = erase_t(t->r, key); }
-    else{
-        if(!t->l) return t->r;
-        if(!t->r) return t->l;
-        if(t->l->prior > t->r->prior){ t = rotate_right(t); t->r = erase_t(t->r, key); }
-        else{ t = rotate_left(t); t->l = erase_t(t->l, key); }
+// Split into (< key, >= key) when ge_right=true; else (< key, > key) if inclusive=false using <= variant below
+static pair<Node*,Node*> split_lt(Node* t, long long key){
+    if(!t) return {nullptr,nullptr};
+    if(t->key >= key){
+        Node* n = clone(t);
+        auto pr = split_lt(t->l, key);
+        n->l = pr.second; pull(n);
+        return {pr.first, n};
+    }else{
+        Node* n = clone(t);
+        auto pr = split_lt(t->r, key);
+        n->r = pr.first; pull(n);
+        return {n, pr.second};
     }
-    t->sz = 1 + getsz(t->l) + getsz(t->r);
-    return t;
 }
 
-static bool find_t(const shared_ptr<Node>& t, long long key){
-    auto cur = t;
-    while(cur){ if(key == cur->key) return true; cur = key < cur->key ? cur->l : cur->r; }
+// Split into (<= key, > key)
+static pair<Node*,Node*> split_le(Node* t, long long key){
+    if(!t) return {nullptr,nullptr};
+    if(t->key > key){
+        Node* n = clone(t);
+        auto pr = split_le(t->l, key);
+        n->l = pr.second; pull(n);
+        return {pr.first, n};
+    }else{
+        Node* n = clone(t);
+        auto pr = split_le(t->r, key);
+        n->r = pr.first; pull(n);
+        return {n, pr.second};
+    }
+}
+
+static Node* merge(Node* a, Node* b){
+    if(!a) return b; if(!b) return a;
+    if(a->prior > b->prior){
+        Node* n = clone(a);
+        n->r = merge(n->r, b); pull(n); return n;
+    }else{
+        Node* n = clone(b);
+        n->l = merge(a, n->l); pull(n); return n;
+    }
+}
+
+static bool find_t(Node* t, long long key){
+    while(t){ if(key==t->key) return true; t = (key < t->key) ? t->l : t->r; }
     return false;
 }
 
-static int count_leq(const shared_ptr<Node>& t, long long x){
-    int cnt=0; auto cur=t;
-    while(cur){
-        if(cur->key <= x){ cnt += 1 + getsz(cur->l); cur = cur->r; }
-        else cur = cur->l;
-    }
-    return cnt;
+static int count_leq(Node* t, long long x){
+    int cnt=0; while(t){ if(t->key <= x){ cnt += 1 + getsz(t->l); t=t->r; } else t=t->l; } return cnt;
 }
 
-static bool predecessor(const shared_ptr<Node>& t, long long key, long long &ans){
-    auto cur = t; bool ok=false; long long best=0;
-    while(cur){ if(cur->key < key){ ok=true; best=cur->key; cur = cur->r; } else cur = cur->l; }
-    if(ok) ans=best; return ok;
+static bool predecessor(Node* t, long long key, long long &ans){
+    bool ok=false; long long best=0; while(t){ if(t->key < key){ ok=true; best=t->key; t=t->r; } else t=t->l; } if(ok) ans=best; return ok;
 }
-
-static bool successor(const shared_ptr<Node>& t, long long key, long long &ans){
-    auto cur = t; bool ok=false; long long best=0;
-    while(cur){ if(cur->key > key){ ok=true; best=cur->key; cur = cur->l; } else cur = cur->r; }
-    if(ok) ans=best; return ok;
+static bool successor(Node* t, long long key, long long &ans){
+    bool ok=false; long long best=0; while(t){ if(t->key > key){ ok=true; best=t->key; t=t->l; } else t=t->r; } if(ok) ans=best; return ok;
 }
 
 int main(){
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    unordered_map<int, shared_ptr<Node>> sets; sets.reserve(64);
-    // Iterator validity emulation: speedtest maintains a current iterator when last find/emplace success.
+    vector<Node*> sets(1, nullptr);
     bool valid=false; int it_a=-1; long long it_key=0;
     int op; int lst=0; int cnt=1;
-    while(cin>>op){
+    while((cin>>op)){
         long long a,b,c;
         switch(op){
             case 0: { // emplace a b
-                cin>>a>>b;
-                bool existed = find_t(sets[a], b);
-                if(!existed){
-                    uint32_t pr = ((uint32_t)rand()<<1) ^ (uint32_t)rand();
-                    sets[a] = insert_t(sets[a], b, pr);
-                    it_a = (int)a; it_key=b; valid=true;
+                cin>>a>>b; int ia=(int)a; if(ia >= (int)sets.size()) sets.resize(ia+1, nullptr);
+                if(!find_t(sets[ia], b)){
+                    auto pr = split_lt(sets[ia], b);
+                    Node* mid = make_node(b, rng());
+                    sets[ia] = merge(merge(pr.first, mid), pr.second);
+                    it_a = ia; it_key = b; valid = true;
                 }
                 break;
             }
             case 1: { // erase a b
-                cin>>a>>b;
-                if(valid && it_a==(int)a && it_key==b) valid=false;
-                if(find_t(sets[a], b)) sets[a]=erase_t(sets[a], b);
+                cin>>a>>b; int ia=(int)a; if(ia >= (int)sets.size()) sets.resize(ia+1, nullptr);
+                if(valid && it_a==ia && it_key==b) valid=false;
+                if(find_t(sets[ia], b)){
+                    auto pr1 = split_lt(sets[ia], b);
+                    auto pr2 = split_le(pr1.second, b); // pr2.first are ==b
+                    // drop pr2.first
+                    sets[ia] = merge(pr1.first, pr2.second);
+                }
                 break;
             }
             case 2: { // copy: s[++lst] = s[a]
-                cin>>a;
+                cin>>a; int ia=(int)a;
                 lst++;
-                sets[lst] = sets[a];
+                if(lst >= (int)sets.size()) sets.resize(lst+1, nullptr);
+                if(ia >= (int)sets.size()) sets.resize(ia+1, nullptr);
+                sets[lst] = sets[ia];
                 break;
             }
-            case 3: { // find a b -> print true/false and set iterator
-                cin>>a>>b;
-                if(find_t(sets[a], b)){
-                    cout<<"true\n";
-                    it_a=(int)a; it_key=b; valid=true;
+            case 3: { // find a b
+                cin>>a>>b; int ia=(int)a; if(ia >= (int)sets.size()) sets.resize(ia+1, nullptr);
+                if(find_t(sets[ia], b)){
+                    cout << "true\n"; it_a=ia; it_key=b; valid=true;
                 }else{
-                    cout<<"false\n";
+                    cout << "false\n";
                 }
-                cnt++;
-                break;
+                cnt++; break;
             }
             case 4: { // range a b c
-                cin>>a>>b>>c;
-                int res = 0;
-                if(b<=c) res = count_leq(sets[a], c) - count_leq(sets[a], b-1);
-                cout<<res<<"\n";
-                cnt++;
-                break;
+                cin>>a>>b>>c; int ia=(int)a; if(ia >= (int)sets.size()) sets.resize(ia+1, nullptr);
+                int res=0; if(b<=c){ if(b==LLONG_MIN) res = count_leq(sets[ia], c); else res = count_leq(sets[ia], c) - count_leq(sets[ia], b-1); }
+                cout << res << "\n"; cnt++; break;
             }
-            case 5: { // --it and print
-                if(valid){
-                    long long ans;
-                    // predecessor of current key; also need to ensure iterator belongs to set a
-                    if(predecessor(sets[it_a], it_key, ans)){
-                        it_key = ans; cout<<it_key<<"\n";
-                    }else{ valid=false; cout<<-1<<"\n"; }
-                }else{
-                    cout<<-1<<"\n";
-                }
-                cnt++;
-                break;
+            case 5: { // --it
+                if(valid){ long long ans; if(predecessor(sets[it_a], it_key, ans)){ it_key=ans; cout<<it_key<<"\n"; } else { valid=false; cout<<-1<<"\n"; } }
+                else { cout<<-1<<"\n"; }
+                cnt++; break;
             }
-            case 6: { // ++it and print
-                if(valid){
-                    long long ans;
-                    if(successor(sets[it_a], it_key, ans)){
-                        it_key = ans; cout<<it_key<<"\n";
-                    }else{ valid=false; cout<<-1<<"\n"; }
-                }else{
-                    cout<<-1<<"\n";
-                }
-                cnt++;
-                break;
+            case 6: { // ++it
+                if(valid){ long long ans; if(successor(sets[it_a], it_key, ans)){ it_key=ans; cout<<it_key<<"\n"; } else { valid=false; cout<<-1<<"\n"; } }
+                else { cout<<-1<<"\n"; }
+                cnt++; break;
             }
             default: break;
         }
