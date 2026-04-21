@@ -8,13 +8,16 @@ struct Node {
     int sz;
 };
 
+static vector<Node*> g_pool;
+
 static inline int getsz(Node* t){ return t? t->sz : 0; }
 static inline Node* make_node(long long k, uint32_t p, Node* l=nullptr, Node* r=nullptr){
     Node* n = new Node{ k, p, l, r, 1 };
     n->sz = 1 + getsz(l) + getsz(r);
+    g_pool.push_back(n);
     return n;
 }
-static inline Node* clone(Node* t){ if(!t) return nullptr; return new Node{ t->key, t->prior, t->l, t->r, t->sz }; }
+static inline Node* clone(Node* t){ if(!t) return nullptr; Node* n = new Node{ t->key, t->prior, t->l, t->r, t->sz }; g_pool.push_back(n); return n; }
 static inline void pull(Node* t){ if(t) t->sz = 1 + getsz(t->l) + getsz(t->r); }
 
 // xorshift RNG
@@ -149,5 +152,7 @@ int main(){
             default: break;
         }
     }
+    // Free all allocated nodes (persistent nodes referenced by multiple versions are in pool once)
+    for(Node* p : g_pool) delete p;
     return 0;
 }
